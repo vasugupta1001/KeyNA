@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="{{ url_for('static', filename='DNA.css') }}">
+    <title>KeyNA</title>
+</head>
+
+<body>
+    <center>
+        <h1 class="titlename" align="center">KeyNA</h1>
+    </center>
+
+    <center>
+        <p class="subtitle" align="center">DNA where Key is Not Applicable</p>
+    </center>
+
+    <hr>
+
+    <form id="userForm">
+        <div class="card-container">
+            <label for="fullname">Username / Full Name: </label>
+            <input type="text" id="fullname" placeholder="Tejas Modi" required>
+            <br>
+            <br>
+            <button type="button" id="enrollBtn">Start Enrollment</button>
+            <button type="button" id="verifyBtn">Start Login (Verify)</button>
+            <p id="counter"></p>
+        </div>
+    </form>
+
+    <br>
+    <br>
+
+    <div class="card-container">
+        <h2 class="card-title">Objective Sentence</h2>
+        <p class="card-text" id="sentence">Enter your name above and choose Enroll or Login to load a sentence.</p>
+    </div>
+
+    <br>
+    <br>
+
+    <form id="typingForm">
+        <div class="card-container">
+            <label for="TypeSentence">Type the sentence below:</label>
+            <br>
+            <br>
+            <input type="text" id="TypeSentence" placeholder="Type the sentence..." autocomplete="off" style="width: 90%; max-width: 700px;">
+            <br>
+            <br>
+            <button type="submit" id="submitTypingBtn" disabled>Submit Typing</button>
+            <p id="result"></p>
+        </div>
+    </form>
+
+    <script>
+        let currentToken = null;
+        let currentPurpose = null; // "enroll" or "verify"
+        let keyEvents = [];
+
+        const fullnameInput = document.getElementById("fullname");
+        const enrollBtn = document.getElementById("enrollBtn");
+        const verifyBtn = document.getElementById("verifyBtn");
+        const sentenceEl = document.getElementById("sentence");
+        const counterEl = document.getElementById("counter");
+        const typeInput = document.getElementById("TypeSentence");
+        const submitTypingBtn = document.getElementById("submitTypingBtn");
+        const resultEl = document.getElementById("result");
+        const typingForm = document.getElementById("typingForm");
+
+        function resetTypingBox() {
+            typeInput.value = "";
+            keyEvents = [];
+            typeInput.focus();
+        }
+
+        async function loadPrompt(purpose) {
+            const username = fullnameInput.value.trim();
+            resultEl.textContent = "";
+
+            if (!username) {
+                resultEl.textContent = "Please enter a username / full name first.";
+                return;
+            }
+
+            currentPurpose = purpose;
+            currentToken = null;
+            submitTypingBtn.disabled = true;
+            sentenceEl.textContent = "Loading sentence...";
+
+            try {
+                const url = `/prompt?username=${encodeURIComponent(username)}&purpose=${encodeURIComponent(purpose)}`;
+                const response = await fetch(url);
+                const data = await response.json();
+
+                if (!response.ok) {
+                    sentenceEl.textContent = "Could not load sentence.";
+                    resultEl.textContent = data.error || "Error loading prompt.";
+                    return;
+                }
+
+                currentToken = data.token;
+                sentenceEl.textContent = data.sentence;
+                counterEl.textContent = data.progress
+                    ? `Mode: Enrollment (${data.progress})`
+                    : "Mode: Login Verification (one-time sentence)";
+                submitTypingBtn.disabled = false;
+                resetTypingBox();
+            } catch (err) {
+                sentenceEl.textContent = "Failed to connect to server.";
+                resultEl.textContent = "Make sure Flask is running at http://127.0.0.1:5000/";
+            }
+        }
+
+        enrollBtn.addEventListener("click", () => loadPrompt("enroll"));
+        verifyBtn.addEventListener("click", () => loadPrompt("verify"));
+
+        // Capture keydown and keyup timing events inside the typing box
+        typeInput.addEventListener("keydown", (e) => {
+            if (!currentToken) return;
+            keyEvents.push({
+                type: "keydown",
+                key: e.key,
+                code: e.code,
+                t: performance.now(),
+                repeat: e.repeat
+            });
+        });
+
+        typeInput.addEventListener("keyup", (e) => {
+            if (!currentToken) return;
+            keyEvents.push({
+                type: "keyup",
+                key: e.key,
+                code: e.code,
+                t: performance.now(),
+                repeat: e.repeat
+            });
+        });
+
+        typingForm.addEventListener("submit", async (e) => {
+            e.preventDefault();
+
+            if (!currentToken || !currentPurpose) {
+                resultEl.textContent = "Please load a sentence first.";
+                return;
+            }
+
+            const endpoint = currentPurpose === "enroll" ? "/enroll" : "/verify";
+            submitTypingBtn.disabled = true;
+            resultEl.textContent = "Checking typing rhythm...";
+
+            try {
+                const response = await fetch(endpoint, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        token: currentToken,
+                        typed_text: typeInput.value,
+                        events: keyEvents
+                    })
+                });
+
+                const data = await response.json();
+                currentToken = null;
+
+                if (currentPurpose === "enroll") {
+                    if (!response.ok) {
+                        resultEl.textContent = `Enrollment error: ${data.reason || "Try again."}`;
+                        await loadPrompt("enroll");
+                        return;
+                    }
+
+                    counterEl.textContent = `Enrollment progress: ${data.progress}`;
+                    if (data.status === "enrolled") {
+                        sentenceEl.textContent = "Enrollment complete! You can now click Start Login (Verify).";
+                        resultEl.textContent = `Status: ENROLLED (${data.progress})`;
+                    } else {
+                        resultEl.textContent = `Saved (${data.progress}). Loading next sentence...`;
+                        await loadPrompt("enroll");
+                    }
+                } else {
+                    if (data.access === "GRANTED") {
+                        resultEl.textContent = data.score !== undefined
+                            ? `ACCESS GRANTED (score: ${data.score})`
+                            : "ACCESS GRANTED";
+                    } else if (data.access === "STEP_UP") {
+                        resultEl.textContent = data.score !== undefined
+                            ? `STEP UP REQUIRED — borderline rhythm (score: ${data.score})`
+                            : "STEP UP REQUIRED";
+                    } else {
+                        const extra = data.reason ? ` — ${data.reason}` : "";
+                        const scoreInfo = data.score !== undefined ? ` (score: ${data.score})` : "";
+                        resultEl.textContent = `ACCESS ${data.access || "DENIED"}${scoreInfo}${extra}`;
+                    }
+                }
+            } catch (err) {
+                resultEl.textContent = "Error submitting typing data to Flask.";
+            }
+        });
+    </script>
+</body>
+</html>
